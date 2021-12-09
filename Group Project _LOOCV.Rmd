@@ -1,0 +1,383 @@
+---
+title: "Penalized Logistic Regression: Classifying Breast Cancer"
+author: "Sasha Farzin-Nia, Anders Ward, Kaustubh Deshpande"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+  html_document:
+    toc: true
+    number_sections: true
+---
+\newpage
+\tableofcontents
+
+# Introduction
+With Breast Cancer being one of the most common types of cancers among women (along with lung and skin), if a mass is discovered in the breasts, usually a biopsy is taken, and it is up to a pathologist to determine the status of the mass, whether or not the mass is Benign (not-cancerous), or malignant (cancerous). With the advances in technology and in statistics, using Machine Learning and Deep Learning Algorithms can help confirm the results given by specialists in the field and also provide support to countries where specialization is not as widely available. This will hopefully lead to faster diagnosis times, thus increased survival rates. In this paper, we take a look at Logistic Regression and model selection methods to see how accurately we can differentiate between a benign and malignant mass. The dataset we use is the "Breast Cancer Wisconsin (Diagnostic) Data Set", made publicly available on the UCI Machine Learning Repository.
+
+
+# Data Cleaning and Preprocessing
+## Imports
+```{r message=F, warning=F}
+library(bestglm)
+library(boot)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(StepReg)
+library(tidyverse)
+```
+
+## Loading the Dataset
+```{r warning=F, show_col_types = F}
+df <- read_csv("breastcancer.csv")
+summary(df)
+```
+Taking a look at the summary, there are a few things to point out:
+\begin{itemize}
+\item Column 1 (id) provides no help to us in our analysis and so we drop it;
+\item Column 33 (...33) provides no help to us in our analysis and also is a column of null values, and for this reason we drop it also; 
+\item Our response variable (diagnosis) has a data type of 'character', when in-fact, it should be 'factor', due to its binary nature. We turn our diagnosis column into a factor data type.
+\end{itemize}
+
+```{r}
+df <- df %>% select(-c(1,33))
+df$diagnosis <- factor(df$diagnosis) 
+```
+
+Let us now check the data we are working with.
+```{r}
+dim(df)
+summary(df)
+```
+After, surprisingly, very little data cleaning, we now have a dataset that we can do some proper analysis on. We now move on, and do some Exploratory Data Analysis and Data Visualization.
+
+## EDA and Data Vizualization
+```{r}
+options(repr.plot.width=8, repr.plot.height=8)
+ggplot(df, aes(diagnosis, fill = diagnosis)) + 
+  geom_bar(stat = "count") + scale_fill_manual(values=c('blue','red')) + 
+  labs(title = "Breast Cancer Diagnosis", x = "") +  theme_bw(base_size = 18) +
+  theme(legend.position="bottom")
+```
+Now that we have taken a look at some Data Visualization, we now begin to model with our data. 
+
+# Statistical Modelling
+
+```{r}
+set.seed(3110)
+training.samples <- df$diagnosis %>% createDataPartition(p=0.80, list = F)
+training <- df[training.samples, ]
+testing <- df[-training.samples,]
+x <- model.matrix(diagnosis~., training)[,-1]
+y <- ifelse(training$diagnosis == "M", 1, 0)
+```
+
+## Ridge Logistic Regression
+```{r}
+set.seed(3110)
+ridge.logistic <- cv.glmnet(x,y,alpha=0, family="binomial")
+plot(ridge.logistic)
+```
+
+This plot displays the Cross-Validation error by using the log of our lambda values. From the left dashed line, we see that the log of our optimal lambda value is about -6. By using this lambda value we will produce the most accurate model.
+
+```{r}
+# Optimal Lasso Lambda Value
+optimal.ridge.lambda <- ridge.logistic$lambda.min
+
+```
+
+We see that the optimal lambda value for ridge logistic regression, which minimizes the models prediction error is $\lambda =$ `r optimal.ridge.lambda`.
+
+With lambda.min giving us our best lambda, we see which variables to use in our logistic regression model, as follows:
+
+```{r}
+coef(ridge.logistic, optimal.ridge.lambda)
+```
+
+The final model we get using lambda.min is as follows:
+
+```{r}
+# final lambda.min model
+ridge.model <- glmnet(x, y, alpha = 0, family="binomial", lambda = optimal.ridge.lambda)
+
+# lambda.min predictions
+x.test <- model.matrix(diagnosis~., testing)[,-1]
+ridge.probs <- ridge.model %>% predict(newx = x.test)
+predicted.classes.ridge <- ifelse(ridge.probs > 0.5, "M", "B")
+
+# Model Accuracy
+observed.classes <- testing$diagnosis
+mean(predicted.classes.ridge == observed.classes)
+```
+
+## Lasso Logistic Regression 
+```{r warning=F}
+set.seed(3110)
+lasso.logistic <- cv.glmnet(x,y,alpha=1, family=binomial(link = "logit"))
+plot(lasso.logistic)
+```
+This plot displays the Cross-Validation error by using the log of our lambda values. From the left dashed line, we see that the log of our optimal lambda value is about -6. By using this lambda value we will produce the most accurate model.
+
+```{r}
+# Optimal Lasso Lambda Value
+optimal.lasso.lambda <- lasso.logistic$lambda.min
+```
+
+We see that the optimal lambda value, which minimizes the models prediction error is $\lambda =$ `r optimal.lasso.lambda`.
+
+With lambda.min giving us our best lambda, we see which variables to use in our logistic regression model, as follows:
+
+```{r}
+coef(lasso.logistic, optimal.lasso.lambda)
+```
+
+
+The final model we get using lambda.min is as follows:
+
+
+```{r}
+# final lambda.min model
+lasso.model <- glmnet(x, y, alpha = 1, family=binomial(link = "logit"), lambda = optimal.lasso.lambda)
+
+
+# lambda.min predictions
+x.test <- model.matrix(diagnosis~., testing)[,-1]
+lasso.probs <- lasso.model %>% predict(newx = x.test)
+predicted.classes.lasso <- ifelse(lasso.probs > 0.5, "M", "B")
+
+# Model Accuracy
+observed.classes <- testing$diagnosis
+mean(predicted.classes.lasso == observed.classes)
+```
+
+
+# Logistic Regression
+
+First we fit a saturated model. We expect collinearity of the predictors will hinder predictive power.
+```{r}
+# Saturated Model
+saturated.model <- glm(diagnosis ~., data = training, family = binomial(link = "logit"))
+
+# Making predictions with Saturated Model
+probs.saturated <- saturated.model %>% predict(testing, type = "response")
+predicted.classes.sat <- ifelse(probs.saturated > 0.5, "M", "B")
+
+# Saturated Model accuracy
+mean(predicted.classes.sat == observed.classes)
+```
+
+It still achieved 95.6%. Let's remove the worst of the collinearity and see how it does.
+
+```{r}
+df_corr <- cor(df %>% select(-diagnosis))
+df2 <- df %>% select(-findCorrelation(df_corr, cutoff = 0.9))
+
+set.seed(3110)
+df_low_col <- cbind(diagnosis=df$diagnosis, df2)
+training.samples.low <- df_low_col$diagnosis %>% createDataPartition(p=0.8, list = F)
+training.low <- df_low_col[training.samples.low, ]
+testing.low <- df_low_col[-training.samples.low,]
+x.low <- model.matrix(diagnosis~., training.low)[,-1]
+y.low <- training.low$diagnosis
+
+x.test.low <- model.matrix(diagnosis~., testing)[,-1]
+observed.classes.low <- testing$diagnosis
+
+# Logistic Model
+logistic.model <- glm(diagnosis ~., data = training.low, family = binomial(link = "logit"))
+
+# Making predictions with Saturated Model
+probs.logistic <- logistic.model %>% predict(testing.low, type = "response")
+
+predicted.classes.logistic <- ifelse(probs.logistic > 0.5, "M", "B")
+
+
+# Saturated Model accuracy
+mean(predicted.classes.logistic == observed.classes.low)
+```
+
+
+
+
+#PCA Analysis  
+
+```{r}
+clean_df <- training[,2:length(df)]
+pr_df <- prcomp(clean_df, scale. = TRUE, center = TRUE)
+summary(pr_df)
+
+plot(100*(pr_df$sdev^2/sum(pr_df$sdev^2)), type="l",ylab="Percentage of Variation explained", xlab="PC number")
+```
+
+
+```{r}
+rmse <- function(x,y) sqrt(mean((x-y)^2))
+
+
+precision <- function(matrix) {
+	# True positive
+    tp <- matrix[2, 2]
+	# false positive
+    fp <- matrix[1, 2]
+    return (tp / (tp + fp))
+}
+
+
+recall <- function(matrix) {
+# true positive
+    tp <- matrix[2, 2]# false positive
+    fn <- matrix[2, 1]
+    return (tp / (tp + fn))
+}
+
+```
+
+
+```{r}
+library(ROCR)
+set.seed(3)
+options(warn=-1)
+cv_data  = data.frame(pr_df$x)
+cv_data$diagnosis <- training$diagnosis
+
+a <- numeric(10)
+b <- numeric(10)
+c <- numeric(10)
+
+for (i in 1:10) {
+  pc_data <- cv_data[, -c((i+1):(ncol(cv_data)-1))]
+  model <- glm(diagnosis ~ ., data = pc_data, family=binomial())
+  predict <- predict(model, pc_data, type = 'response')
+  # confusion matrix
+  confusion_mat <- table(pc_data$diagnosis, predict > 0.5)
+  a[i] <- sum(diag(confusion_mat)) / sum(confusion_mat)
+  b[i] <- precision(confusion_mat)
+  c[i] <- recall(confusion_mat)
+  # ROCRpred <- prediction(predict, pc_data$diagnosis)
+  # ROCRperf <- performance(ROCRpred, 'tpr', 'fpr')
+  # plot(ROCRperf, colorize = TRUE, text.adj = c(-0.2, 1.7))
+}
+
+plot(a, ylab="Accuracy",xlab="PC number", col=ifelse(a==max(a), "red", "black"))
+plot(b, ylab="Precision",xlab="PC number", col=ifelse(b==max(b), "red", "black"))
+plot(c, ylab="Recall",xlab="PC number", col=ifelse(c==max(c), "red", "black"))
+```
+
+We will use first 9 PCs as suggested by the plotd above. 
+
+
+```{r}
+pc_data <- cv_data[, -c((10):(ncol(cv_data)-1))]
+model <- glm(diagnosis ~ ., data = pc_data, family=binomial())
+new_test <- predict(pr_df, testing)
+new_test <- data.frame(new_test)
+new_test$diagnosis <- testing$diagnosis
+# new_test$diagnosis <- testing$diagnosis
+predict2 <- predict(model, new_test, type = 'response')
+confusion_mat <- table(new_test$diagnosis, predict2 > 0.5)
+confusion_mat
+sum(diag(confusion_mat)) / sum(confusion_mat)
+```
+
+PCA demonstrates an accuracy of 98.2% when predicting on the data it has been fit on. Let us try LOOCV to further evaluate PCA vs Ridge vs Lasso. 
+
+
+#Leave One Out Cross Validation
+```{r}
+options(warn=-1)
+# create vectors to store the predictions for each model
+# error_model1 <- rep(NA, 568)
+# ...
+Lasso_LOOCV <- rep(NA, 568)
+Ridge_LOOCV <- rep(NA, 568) 
+PCA_LOOCV <- rep(NA, 568) 
+Lasso_lambdas <- rep(NA, 568) 
+Ridge_lambdas <- rep(NA, 568) 
+
+
+for(i in 1:568){
+  
+  # write a line to select the ith line in the data
+  # store this line as the 'test' case
+  test_case <- df[i,]
+  # store the remaining as the 'training' data
+  training <- df[-c(i),]
+  
+  x <- model.matrix(diagnosis~., training)[,-1]
+  y <- ifelse(training$diagnosis == "M", 1, 0)
+  
+  test_x <- model.matrix(diagnosis~., test_case)[,-1]
+  
+  #Fit ridge and lasso
+  loocv_ridge_mod <- glmnet(x, y, alpha = 0, family="binomial", lambda = optimal.ridge.lambda)
+  loocv_lasso_mod <- glmnet(x, y, alpha = 1, family=binomial(link = "logit"), lambda = optimal.lasso.lambda)
+  
+  #Fit PCA
+  clean_df <- training[,2:length(df)]
+  pr_df <- prcomp(clean_df, scale. = TRUE, center = TRUE)
+  cv_data  = data.frame(pr_df$x)
+  cv_data$diagnosis <- training$diagnosis
+  pc_data <- cv_data[, -c((10):(ncol(cv_data)-1))]
+  model <- glm(diagnosis ~ ., data = pc_data, family=binomial())
+  
+  #Ridge and Lasso predictions
+  lasso.probs <- loocv_lasso_mod %>% predict(newx = test_x, type = "response")
+  ridge.probs <- loocv_ridge_mod %>% predict(newx = test_x, type = "response")
+  Ridge_LOOCV[i] <- ifelse(ridge.probs > 0.5, "M", "B")
+  Lasso_LOOCV[i] <- ifelse(lasso.probs > 0.5, "M", "B")
+  
+  #PCA predicrions
+  new_test <- predict(pr_df, test_case)
+  new_test <- data.frame(new_test)
+  new_test$diagnosis <- test_case$diagnosis
+  PCA_LOOCV[i] <- ifelse(predict(model, new_test, type = 'response') > 0.5, "M", "B")
+}
+```
+
+
+
+Let's inteprret the results of LOOCV
+
+```{r}
+
+confusion_mat_PCA_LOOCV <- table(df$diagnosis, PCA_LOOCV)
+confusion_mat_lasso_LOOCV <- table(df$diagnosis, Lasso_LOOCV)
+confusion_mat_ridge_LOOCV <- table(df$diagnosis, Ridge_LOOCV)
+
+confusion_mat_PCA_LOOCV
+confusion_mat_lasso_LOOCV
+confusion_mat_ridge_LOOCV
+
+PCA_accuracy <- sum(diag(confusion_mat_PCA_LOOCV)) / sum(confusion_mat_PCA_LOOCV)
+Lasso_accuracy <- sum(diag(confusion_mat_lasso_LOOCV)) / sum(confusion_mat_lasso_LOOCV)
+Ridge_accuracy <- sum(diag(confusion_mat_ridge_LOOCV)) / sum(confusion_mat_ridge_LOOCV)
+
+paste("LOOCV Accuracy for PCA is ", PCA_accuracy)
+paste("LOOCV Accuracy for Lasso is ", Lasso_accuracy)
+paste("LOOCV Accuracy for Ridge is ", Ridge_accuracy)
+
+PCA_precision <-  precision(confusion_mat_PCA_LOOCV)
+Lasso_precision <-  precision(confusion_mat_lasso_LOOCV)
+Ridge_precision <-  precision(confusion_mat_ridge_LOOCV)
+
+
+paste("LOOCV Precision for PCA is ", PCA_precision)
+paste("LOOCV Precision for Lasso is ", Lasso_precision)
+paste("LOOCV Precision for Ridge is ", Ridge_precision)
+
+
+PCA_recall <- recall(confusion_mat_PCA_LOOCV)
+Lasso_recall <- recall(confusion_mat_lasso_LOOCV)
+Ridge_recall <- recall(confusion_mat_ridge_LOOCV)
+
+
+paste("LOOCV Recall for PCA is ", PCA_recall)
+paste("LOOCV Recall for Lasso is ", Lasso_recall)
+paste("LOOCV Recall for Ridge is ", Ridge_recall)
+```
+
